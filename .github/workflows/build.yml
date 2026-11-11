@@ -1,4 +1,4 @@
-name: Build unsigned IPA
+name: Build apps
 
 on:
   push:
@@ -30,16 +30,27 @@ jobs:
           cp -R build/Release-iphoneos/PencilProbe.app Payload/
           zip -qr PencilProbe.ipa Payload
 
+      - name: Build Mac scanner
+        run: |
+          xcodebuild build \
+            -project PencilScan.xcodeproj \
+            -target PencilScan \
+            -configuration Release \
+            SYMROOT="$PWD/build-mac"
+          ditto -c -k --keepParent build-mac/Release/PencilScan.app PencilScan-mac.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: PencilProbe
-          path: PencilProbe.ipa
+          path: |
+            PencilProbe.ipa
+            PencilScan-mac.zip
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "build-${{ github.run_number }}" PencilProbe.ipa \
+          gh release create "build-${{ github.run_number }}" PencilProbe.ipa PencilScan-mac.zip \
             --target "${{ github.sha }}" \
-            --title "PencilProbe build ${{ github.run_number }}" \
-            --notes "Unsigned IPA for sideloading. Logs any Apple Pencil gestures, touches and hover events the app receives."
+            --title "Build ${{ github.run_number }}" \
+            --notes "PencilProbe.ipa: unsigned iPhone app that logs Apple Pencil events. PencilScan-mac.zip: Mac Bluetooth scanner that reads whatever a nearby device exposes."
