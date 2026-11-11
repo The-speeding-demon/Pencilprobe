@@ -37,12 +37,14 @@ final class BLEScanner: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     @Published var status = "Starting Bluetooth…"
     @Published var log = ""
     @Published var connectedID: UUID?
+    @Published var autoConnect = true
 
     private var central: CBCentralManager!
     private var found: [UUID: Device] = [:]
     private var peripherals: [UUID: CBPeripheral] = [:]
     private var refreshTimer: Timer?
     private var connectTimeout: Timer?
+    private var pendingID: UUID?
 
     override init() {
         super.init()
@@ -87,7 +89,17 @@ final class BLEScanner: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         let serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
         let connectable = (advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber)?.boolValue ?? false
 
+        let isNew = found[peripheral.identifier] == nil
         peripherals[peripheral.identifier] = peripheral
+        defer {
+            // The Pencil changes its Bluetooth identity often, so try the moment a new one shows up.
+            if isNew, found[peripheral.identifier]?.looksLikePencil == true {
+                write("Apple Pencil is broadcasting as \(peripheral.identifier.uuidString.prefix(8)) (\(RSSI.intValue) dBm)")
+                if autoConnect && connectedID == nil {
+                    connect(peripheral.identifier)
+                }
+            }
+        }
         found[peripheral.identifier] = Device(
             id: peripheral.identifier,
             name: name,
@@ -119,12 +131,17 @@ final class BLEScanner: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     func connect(_ id: UUID) {
         guard let peripheral = peripherals[id] else { return }
         write("Connecting to \(found[id]?.name ?? "device") \(id.uuidString)…")
+        if let old = pendingID, old != id, let stale = peripherals[old] {
+            central.cancelPeripheralConnection(stale)
+        }
+        pendingID = id
         peripheral.delegate = self
         central.connect(peripheral)
 
         connectTimeout?.invalidate()
         connectTimeout = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
-            guard let self = self, self.connectedID != id else { return }
+            guard let self = self, self.connectedID != id, self.pendingID == id else { return }
+            self.pendingID = nil
             self.central.cancelPeripheralConnection(peripheral)
             self.write("Timed out: the device did not accept a connection within 12 seconds.")
         }
@@ -137,6 +154,7 @@ final class BLEScanner: NSObject, ObservableObject, CBCentralManagerDelegate, CB
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectTimeout?.invalidate()
+        pendingID = nil
         connectedID = peripheral.identifier
         write("Connected. Discovering services…")
         peripheral.discoverServices(nil)
@@ -282,6 +300,7 @@ struct ContentView: View {
                 Toggle("Named only", isOn: $namedOnly)
                 Toggle("Apple only", isOn: $appleOnly)
             }
+            Toggle("Auto-connect to Apple Pencil the moment it appears", isOn: $scanner.autoConnect)
             List(shown, selection: $selection) { device in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
